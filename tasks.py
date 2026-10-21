@@ -66,7 +66,13 @@ def _app_and_models():
     )
 
 
-def _send_email(recipient, subject, html, text_body):
+def reminder_user_name(db, User, user_id):
+    """Return the account name for a reminder greeting, if the account exists."""
+    user = db.session.get(User, user_id)
+    return user.name if user else ""
+
+
+def _send_email(recipient, subject, html):
     api_key = os.getenv("BREVO_API_KEY", "").strip()
     sender_email = os.getenv("EMAIL_FROM", "").strip()
     sender_name = os.getenv(
@@ -95,7 +101,6 @@ def _send_email(recipient, subject, html, text_body):
             "to": [{"email": recipient}],
             "subject": subject,
             "htmlContent": html,
-            "textContent": text_body,
         },
         timeout=20,
     )
@@ -151,34 +156,29 @@ def send_reminder(self, reminder_id):
 
         subject = f"Study reminder: {task.title}"
 
-        text_body = (
-            "TaskScheduler and DeadlineManager reminder\n\n"
-            f"Task: {task.title}\n"
-            f"Subject: {task.subject}\n"
-            f"Deadline: {due}\n"
-            f"Priority: {task.priority}\n\n"
-            "Open your scheduler to review your plan."
-        )
+        from flask import render_template
 
-        html = (
-            "<div style='font-family:Arial,sans-serif;"
-            "line-height:1.6;color:#24233a'>"
-            "<h2>Your TaskScheduler and DeadlineManager reminder</h2>"
-            "<p>This is a reminder about your task.</p>"
-            f"<p><b>Task:</b> {_escape(task.title)}<br>"
-            f"<b>Subject:</b> {_escape(task.subject)}<br>"
-            f"<b>Deadline:</b> {_escape(due)}<br>"
-            f"<b>Priority:</b> {_escape(task.priority)}</p>"
-            "<p>Plan a focused session and take a short break afterward.</p>"
-            "</div>"
+        html = render_template(
+            "emails/deadline_reminder.html",
+            user_name=reminder_user_name(db, User, reminder.user_id),
+            task_title=task.title,
+            subject=task.subject,
+            deadline=due,
+            priority=task.priority,
+            duration=task.duration,
+            notes=task.notes or "",
         )
 
         try:
+            app.logger.info(
+                "Sending deadline reminder using templates/emails/deadline_reminder.html "
+                "for reminder_id=%s",
+                reminder_id,
+            )
             _send_email(
                 reminder.recipient,
                 subject,
                 html,
-                text_body,
             )
 
             reminder.status = "sent"
@@ -229,42 +229,50 @@ def send_daily_digest(self, user_id, local_date):
         if not pending_tasks:
             return "No pending tasks; no email sent."
 
-        lines = [
-            f"- {task.title} ({task.subject}) — due "
-            f"{task.due_date:%d %b %Y} "
-            f"{task.due_time:%H:%M}, "
-            f"{task.priority} priority"
-            for task in pending_tasks[:30]
+        tasks_for_email = pending_tasks[:30]
+
+        from flask import render_template
+
+        email_tasks = [
+            {
+                "title": task.title,
+                "subject": task.subject,
+                "due_label": (
+                    f"{task.due_date:%d %b %Y} at "
+                    f"{task.due_time:%H:%M}"
+                ),
+                "priority": task.priority,
+                "duration": task.duration,
+                "notes": task.notes or "",
+            }
+            for task in tasks_for_email
         ]
 
-        text_body = (
-            f"Hello, {user.name}!\n\n"
-            f"Here are your pending study tasks for {local_date}:\n\n"
-            + "\n".join(lines)
+        due_today_count = sum(
+            task.due_date.isoformat() == local_date
+            for task in pending_tasks
+        )
+        total_minutes = sum(task.duration for task in pending_tasks)
+
+        html = render_template(
+            "emails/daily_reminder.html",
+            user_name=user.name,
+            total_tasks=len(pending_tasks),
+            due_today_count=due_today_count,
+            total_minutes=total_minutes,
+            tasks=email_tasks,
         )
 
-        html_items = "".join(
-            f"<li><b>{_escape(task.title)}</b> "
-            f"({_escape(task.subject)}) — due "
-            f"{task.due_date:%d %b %Y} "
-            f"{task.due_time:%H:%M}, "
-            f"{_escape(task.priority)} priority</li>"
-            for task in pending_tasks[:30]
+        app.logger.info(
+            "Sending daily digest using templates/emails/daily_reminder.html "
+            "for user_id=%s and local_date=%s",
+            user.id,
+            local_date,
         )
-
-        html = (
-            "<div style='font-family:Arial,sans-serif;line-height:1.6'>"
-            f"<h2>Hello, {_escape(user.name)}!</h2>"
-            f"<p>Your pending study tasks for "
-            f"{_escape(local_date)}:</p>"
-            f"<ul>{html_items}</ul></div>"
-        )
-
         _send_email(
             user.email,
             "Your daily TaskScheduler and DeadlineManager study plan",
             html,
-            text_body,
         )
 
         return f"Daily digest sent to {user.email}."
