@@ -142,13 +142,21 @@ def create_app(test_config=None):
             user.otp_last_sent_at = now
             db.session.commit()
             try:
+                
                 from tasks import _send_email
-                text_body = f"Your TaskScheduler and DeadlineManager verification code is {otp}. It expires in 10 minutes. If you did not request this, ignore this email."
-                html = ("<div style='font-family:Arial,sans-serif;line-height:1.6'>"
-                        "<h2>Verify your TaskScheduler and DeadlineManager account</h2><p>Your one-time verification code is:</p>"
-                        f"<p style='font-size:28px;font-weight:bold;letter-spacing:6px'>{otp}</p>"
-                        "<p>This code expires in 10 minutes. Do not share it with anyone.</p></div>")
-                _send_email(email, "Your TaskScheduler and DeadlineManager verification code", html, text_body)
+
+
+                html = render_template(
+                    "emails/verify_email.html",
+                    otp=otp,
+                )
+
+                _send_email(
+                    email,
+                    "Thanks for registering | Verify your email",
+                    html,
+                )
+
             except Exception:
                 app.logger.exception("Unable to send registration OTP")
                 db.session.rollback()
@@ -199,28 +207,44 @@ def create_app(test_config=None):
     def resend_otp():
         email = request.form.get("email", "").strip().lower()
         user = User.query.filter_by(email=email).first()
+
+        # Avoid revealing whether an email address has an account.
         if not user or user.is_verified:
-            flash("If this address has a pending verification, a new code can be requested.", "success")
+            flash(
+                "If this address has a pending verification, a new code can be requested.",
+                "success",
+            )
             return redirect(url_for("login"))
+
         now = datetime.utcnow()
         if user.otp_last_sent_at and (now - user.otp_last_sent_at).total_seconds() < 60:
             flash("Wait 60 seconds before requesting another code.", "error")
             return redirect(url_for("verify_email", email=email))
+
         otp = f"{secrets.randbelow(1_000_000):06d}"
         user.otp_hash = _otp_digest(otp)
         user.otp_expires_at = now + timedelta(minutes=10)
         user.otp_attempts = 0
         user.otp_last_sent_at = now
         db.session.commit()
+
         try:
             from tasks import _send_email
-            text_body = f"Your new TaskScheduler and DeadlineManager verification code is {otp}. It expires in 10 minutes."
-            html = f"<div style='font-family:Arial,sans-serif'><h2>Your new verification code</h2><p style='font-size:28px;letter-spacing:6px;font-weight:bold'>{otp}</p><p>Expires in 10 minutes.</p></div>"
-            _send_email(email, "Your TaskScheduler and DeadlineManager verification code", html, text_body)
+
+            html = render_template(
+                "emails/verify_email.html",
+                otp=otp,
+            )
+            _send_email(
+                email,
+                "Your new verification code | Your Study Space",
+                html,
+            )
         except Exception:
             app.logger.exception("Unable to resend registration OTP")
             flash("We could not send a new code. Try again later.", "error")
             return redirect(url_for("verify_email", email=email))
+
         flash("A new verification code was sent.", "success")
         return redirect(url_for("verify_email", email=email))
 
